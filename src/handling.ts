@@ -5,7 +5,13 @@ import { readFile } from 'node:fs/promises';
 import { getShellPath, popAssert, removeColors, waitMs } from './utils.js';
 import { OogExecutionError, OogInitializationError, OogNotInitializedError } from './errors.js';
 import { ExecutionResult, FlushReason } from './types.js';
-import { FAILURE_MESSAGE, FLUSH_MESSAGE, SUCCESS_MESSAGE } from './constants.js';
+import {
+    FAILURE_MESSAGE,
+    FLUSH_MESSAGE,
+    GREATER_THAN_ENCODED,
+    LESS_THAN_ENCODED,
+    SUCCESS_MESSAGE
+} from './constants.js';
 
 /** Options for the {@link HmOog.constructor HmOog constructor}. */
 export interface OogOptions {
@@ -131,7 +137,9 @@ export class HmOog {
         }
 
         const rawText = lines.join('\n');
-        const rawUncoloredText = removeColors(rawText);
+        const rawUncoloredText = removeColors(rawText)
+            .replaceAll(LESS_THAN_ENCODED, '<')
+            .replaceAll(GREATER_THAN_ENCODED, '>');
         const uncoloredLines = rawUncoloredText.split('\n');
 
         return {

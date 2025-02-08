@@ -1,0 +1,20 @@
+{
+    "name": "hmoog",
+    "version": "0.0.1",
+    "description": "Out-of-game automation for Hackmud",
+    "main": "dist/index.js",
+    "keywords": [
+        "hackmud", "out-of-game", "oog"
+    ],
+    "author": "Sarah Klocke (https://sarahisweird.neocities.org)",
+    "license": "MIT-0",
+    "devDependencies": {
+        "@types/node": "^22.13.1",
+        "ts-node": "^10.9.2",
+        "typescript": "^5.7.3"
+    },
+    "dependencies": {
+        "@sarahisweird/hmoog-native": "^0.1.2"
+    },
+    "type": "module"
+}

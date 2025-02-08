@@ -1,5 +1,5 @@
 {
-    "name": "hmoog",
+    "name": "@sarahisweird/hmoog",
     "version": "0.0.1",
     "description": "Out-of-game automation for Hackmud",
     "main": "dist/index.js",

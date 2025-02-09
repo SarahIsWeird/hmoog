@@ -6,9 +6,10 @@ import { getShellPath, popAssert, removeColors, waitMs } from './utils.js';
 import { OogExecutionError, OogInitializationError, OogNotInitializedError } from './errors.js';
 import { ExecutionResult, FlushReason } from './types.js';
 import {
+    ACTIVATING_HARDLINE_MESSAGE,
     FAILURE_MESSAGE,
     FLUSH_MESSAGE,
-    GREATER_THAN_ENCODED,
+    GREATER_THAN_ENCODED, HARDLINE_ACTIVE_MESSAGE, HARDLINE_RECALIBRATING_MESSAGE,
     LESS_THAN_ENCODED,
     SUCCESS_MESSAGE
 } from './constants.js';
@@ -91,24 +92,35 @@ export class HmOog {
     /**
      * Runs the `flush` command and waits until it successfully flushed the shell.
      *
+     * @param timeout=0 the maximum number of milliseconds to try flushing.
+     *                  A value below 1 means no waiting.
+     *
+     * @returns whether or not a timeout happened.
+     *
      * @remarks
      * The flush operation may be delayed by another program that's currently being executed,
      * in which case this function only returns when both the program and the flush command ran.
      */
-    async flush(): Promise<void> {
+    async flush(timeout: number = 0): Promise<boolean> {
         this.assertDidInit();
 
         let didCommandFlush: boolean = false;
+        let didTimeout: boolean = false;
 
         this.waitForCommandFlush().then(() => { didCommandFlush = true });
+        if (timeout > 0) {
+            setTimeout(() => didTimeout = true, timeout);
+        }
+
         await this.sendRaw('flush');
-        while (!didCommandFlush) {
+        while (!didCommandFlush && !didTimeout) {
             native.sendKeystrokes('\n');
             await waitMs(50);
         }
 
         // For some reason, the delay sometimes isn't big enough. This should fix it.
-        await waitMs(100);
+        await waitMs(200);
+        return !didCommandFlush && didTimeout;
     }
 
     /**
@@ -123,13 +135,17 @@ export class HmOog {
         if (!await this.sendRaw(command)) throw new OogExecutionError('Could not send command to Hackmud!');
         await this.flush();
 
+        return this.processOutput(command);
+    }
+
+    private processOutput(ofCommand: string): ExecutionResult {
         const lines: string[] = this.consumeLines();
 
         const echoedCommand = lines.length > 0
             ? removeColors(lines.shift()!).slice(2)
             : undefined;
 
-        if (echoedCommand !== command) throw new OogExecutionError('Could not find the command that was sent!');
+        if (echoedCommand !== ofCommand) throw new OogExecutionError('Could not find the command that was sent!');
 
         let success: boolean | undefined;
         if ([SUCCESS_MESSAGE, FAILURE_MESSAGE].includes(lines[0])) {
@@ -143,7 +159,7 @@ export class HmOog {
         const uncoloredLines = rawUncoloredText.split('\n');
 
         return {
-            command: command,
+            command: ofCommand,
             success: success,
             output: {
                 colored: {
@@ -183,6 +199,93 @@ export class HmOog {
         const lines: string[] = this.unprocessedLines;
         this.unprocessedLines = [];
         return lines;
+    }
+
+    /**
+     * Enters hardline.
+     *
+     * @remarks
+     *
+     * Due to the hardline GUI, it takes *at least* 15 seconds to enter hardline!
+     * If entering hardline fails, the call takes ~2s.
+     * If it succeeds, it will take over 20s!
+     *
+     * This delay can **not** be reduced meaningfully due to the
+     * `-hardline active-` message, as well as all the animations being pretty slow.
+     *
+     * @returns 0 if successful, otherwise how many milliseconds are left until the next hardline.
+     */
+    async enterHardline(): Promise<number> {
+        this.consumeLines();
+
+        await this.sendRaw('kernel.hardline');
+
+        // If we can flush, we can't be in the hardline!
+        const didTimeout = await this.flush(2000);
+        if (!didTimeout) {
+            // Apparently, a flush happens before entering hardline.
+            // Unsure if it's only sometimes or always,
+            // but we can just check the response if we got one.
+            const cooldown = this.getHardlineCooldown();
+            if (cooldown > 0) return cooldown;
+        }
+
+        await waitMs(8000);
+
+        for (let _i = 0; _i < 12; _i++) {
+            native.sendKeystrokes('0123456789');
+            await waitMs(10);
+        }
+
+        await waitMs(11000);
+
+        await this.flush();
+        this.consumeLines();
+        return 0;
+    }
+
+    /**
+     * Exits hardline.
+     *
+     * @remarks
+     *
+     * Wait five seconds after calling `kernel.hardline {dc: true}`, due to the
+     * `-hardline disconnected-` message breaking parsing.
+     *
+     * While it could be reduced, it would also show up unexpectedly in results
+     * from {@link runCommand}!
+     */
+    async exitHardline(): Promise<void> {
+        await this.sendRaw('kernel.hardline {dc: true}');
+        await waitMs(5000);
+        await this.flush();
+        this.consumeLines();
+    }
+
+    /**
+     * Helper method to get the number of milliseconds left until the next hardline is available.
+     *
+     * @private
+     */
+    private getHardlineCooldown(): number {
+        const result = this.processOutput('kernel.hardline');
+
+        const response = result.output.colored.lines[0];
+        if (response && response === ACTIVATING_HARDLINE_MESSAGE) return 0;
+
+        if (!response || !response.startsWith(HARDLINE_RECALIBRATING_MESSAGE)) {
+            const errorMessage = 'Could not enter hardline, and yet there is no recalibration message!\n'
+                + 'Response from kernel.hardline:\n'
+                + response;
+            throw new OogExecutionError(errorMessage);
+        }
+
+        const secondsString = response.substring(HARDLINE_RECALIBRATING_MESSAGE.length + 1)
+            .split(' ')[0]
+            .replace('s', '');
+
+        // Add one second, just to be sure. "0s" remaining is a thing.
+        return (parseInt(secondsString) + 1) * 1000;
     }
 
     /**
@@ -245,6 +348,9 @@ export class HmOog {
         const flushReason: FlushReason = newLines[newLines.length - 1] === FLUSH_MESSAGE
             ? FlushReason.COMMAND
             : FlushReason.AUTO;
+
+        // :(
+        newLines = newLines.filter(line => line !== HARDLINE_ACTIVE_MESSAGE);
 
         if (flushReason === FlushReason.COMMAND) {
             popAssert(newLines, FLUSH_MESSAGE);

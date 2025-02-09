@@ -12,17 +12,27 @@ pnpm i @sarahisweird/hmoog
 
 Hackmud must be open for HmOog to work!
 
-## Example
+## Getting started
 
 For more specialized stuff, check out the TSDocs of the `HmOog` class!
 
 ```ts
-import { HmOog } from '@sarahisweird/hmoog';
+import { HmOog, waitMs } from '@sarahisweird/hmoog';
 
 const oog = new HmOog();
 
 // This must be called before any other calls!
 await oog.init();
+
+let millisecondsUntilHardline = await oog.enterHardline();
+if (millisecondsUntilHardline > 0) {
+    await waitMs(millisecondsUntilHardline);
+    await oog.enterHardline();
+}
+
+// Do stuff in hardline
+
+await oog.exitHardline();
 
 const result = await oog.runCommand('accts.xfer_gc_to');
 /*

@@ -1,4 +1,4 @@
-# Hackmud OOG
+# HmOog
 
 A Node.js library to write out-of-game Hackmud scripts.
 
@@ -50,3 +50,11 @@ const result = await oog.runCommand('accts.xfer_gc_to');
 }
 */
 ```
+
+## License
+
+HmOog is licensed under MIT-0.
+That means: do what you want with this, but don't yell at me if it breaks your computer, marriage or bank account.
+You don't need to attribute anything to me either, but I'd appreciate it if you do it anyway :)
+
+For the full license text, check [LICENSE.md](LICENSE.md).

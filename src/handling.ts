@@ -9,7 +9,10 @@ import {
     ACTIVATING_HARDLINE_MESSAGE,
     FAILURE_MESSAGE,
     FLUSH_MESSAGE,
-    GREATER_THAN_ENCODED, HARDLINE_ACTIVE_MESSAGE, HARDLINE_RECALIBRATING_MESSAGE,
+    GREATER_THAN_ENCODED,
+    HARDLINE_ACTIVE_MESSAGE,
+    HARDLINE_DISCONNECTED_MESSAGE,
+    HARDLINE_RECALIBRATING_MESSAGE,
     LESS_THAN_ENCODED,
     SUCCESS_MESSAGE
 } from './constants.js';
@@ -34,9 +37,11 @@ export class HmOog {
     private readonly shouldFocusShell: boolean;
     private readonly fileWatcher: FileWatcher;
 
-    private didInit = false;
+    private didInit: boolean = false;
     private lastShellFlag: string | undefined;
     private unprocessedLines: string[] = [];
+
+    private isInHardline: boolean = false;
 
     /**
      * @param options Initialisation options - see {@link OogOptions}
@@ -119,7 +124,7 @@ export class HmOog {
         }
 
         // For some reason, the delay sometimes isn't big enough. This should fix it.
-        await waitMs(200);
+        await waitMs(500);
         return !didCommandFlush && didTimeout;
     }
 
@@ -186,7 +191,7 @@ export class HmOog {
         if (command.includes('\n')) throw new TypeError('Commands cannot contain newlines!');
 
         if (!native.sendKeystrokes(command + '\n')) return false;
-        await waitMs(20);
+        await waitMs(50);
         return true;
     }
 
@@ -199,6 +204,13 @@ export class HmOog {
         const lines: string[] = this.unprocessedLines;
         this.unprocessedLines = [];
         return lines;
+    }
+
+    /**
+     * Get the current hardline activation status.
+     */
+    isHardlineActive(): boolean {
+        return this.isInHardline;
     }
 
     /**
@@ -221,7 +233,7 @@ export class HmOog {
         await this.sendRaw('kernel.hardline');
 
         // If we can flush, we can't be in the hardline!
-        const didTimeout = await this.flush(2000);
+        const didTimeout = await this.flush(3000);
         if (!didTimeout) {
             // Apparently, a flush happens before entering hardline.
             // Unsure if it's only sometimes or always,
@@ -349,8 +361,17 @@ export class HmOog {
             ? FlushReason.COMMAND
             : FlushReason.AUTO;
 
+        if (newLines.indexOf(HARDLINE_ACTIVE_MESSAGE) !== -1) {
+            this.isInHardline = true;
+        }
+
+        if (newLines.indexOf(HARDLINE_DISCONNECTED_MESSAGE) !== -1) {
+            this.isInHardline = false;
+        }
+
         // :(
-        newLines = newLines.filter(line => line !== HARDLINE_ACTIVE_MESSAGE);
+        newLines = newLines.filter(line =>
+            (line !== HARDLINE_ACTIVE_MESSAGE) && (line !== HARDLINE_DISCONNECTED_MESSAGE));
 
         if (flushReason === FlushReason.COMMAND) {
             popAssert(newLines, FLUSH_MESSAGE);

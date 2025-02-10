@@ -146,11 +146,14 @@ export class HmOog {
     private processOutput(ofCommand: string): ExecutionResult {
         const lines: string[] = this.consumeLines();
 
-        const echoedCommand = lines.length > 0
-            ? removeColors(lines.shift()!).slice(2)
-            : undefined;
+        let echoedCommand: string | undefined = undefined;
+        while (echoedCommand !== ofCommand) {
+            echoedCommand = lines.length > 0
+                ? removeColors(lines.shift()!).slice(2)
+                : undefined;
 
-        if (echoedCommand !== ofCommand) throw new OogExecutionError('Could not find the command that was sent!');
+            if (echoedCommand === undefined) throw new OogExecutionError('Could not find the command that was sent!');
+        }
 
         let success: boolean | undefined;
         if ([SUCCESS_MESSAGE, FAILURE_MESSAGE].includes(lines[0])) {
@@ -323,6 +326,7 @@ export class HmOog {
      */
     private async placeShellFlag(): Promise<void> {
         this.lastShellFlag = randomUUID().toString();
+        await waitMs(500);
         await this.sendRaw(`# ${this.lastShellFlag}`);
     }
 
@@ -368,6 +372,8 @@ export class HmOog {
         if (newLines.indexOf(HARDLINE_DISCONNECTED_MESSAGE) !== -1) {
             this.isInHardline = false;
         }
+
+        if (flushReason === FlushReason.AUTO) return FlushReason.AUTO;
 
         // :(
         newLines = newLines.filter(line =>

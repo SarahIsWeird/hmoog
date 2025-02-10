@@ -6,6 +6,6 @@ export const ACTIVATING_HARDLINE_MESSAGE = '<color=#9B9B9BFF>-activating hardlin
 export const HARDLINE_ACTIVE_MESSAGE = '<color=#FF0000FF>-hardline active-</color>';
 export const HARDLINE_DISCONNECTED_MESSAGE = '<color=#9B9B9BFF>-hardline disconnected-</color>';
 export const HARDLINE_RECALIBRATING_MESSAGE = '<color=#FF0000FF>:::TRUST COMMUNICATION:::</color> hardline is recalibrating.';
-
+export const NO_HARDLINES_AVAILABLE_MESSAGE = '<color=#FF0000FF>:::TRUST COMMUNICATION:::</color> no hardlines available.';
 export const LESS_THAN_ENCODED = 'È';
 export const GREATER_THAN_ENCODED = 'É';

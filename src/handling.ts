@@ -13,7 +13,7 @@ import {
     HARDLINE_ACTIVE_MESSAGE,
     HARDLINE_DISCONNECTED_MESSAGE,
     HARDLINE_RECALIBRATING_MESSAGE,
-    LESS_THAN_ENCODED,
+    LESS_THAN_ENCODED, NO_HARDLINES_AVAILABLE_MESSAGE,
     SUCCESS_MESSAGE
 } from './constants.js';
 
@@ -288,14 +288,19 @@ export class HmOog {
         const response = result.output.colored.lines[0];
         if (response && response === ACTIVATING_HARDLINE_MESSAGE) return 0;
 
-        if (!response || !response.startsWith(HARDLINE_RECALIBRATING_MESSAGE)) {
+        let secondsString: string;
+        if (response && response.startsWith(NO_HARDLINES_AVAILABLE_MESSAGE)) {
+            secondsString = response.substring(NO_HARDLINES_AVAILABLE_MESSAGE.length + 1);
+        } else if (response && response.startsWith(HARDLINE_RECALIBRATING_MESSAGE)) {
+            secondsString = response.substring(HARDLINE_RECALIBRATING_MESSAGE.length + 1);
+        } else {
             const errorMessage = 'Could not enter hardline, and yet there is no recalibration message!\n'
                 + 'Response from kernel.hardline:\n'
                 + response;
             throw new OogExecutionError(errorMessage);
         }
 
-        const secondsString = response.substring(HARDLINE_RECALIBRATING_MESSAGE.length + 1)
+        secondsString = secondsString
             .split(' ')[0]
             .replace('s', '');
 

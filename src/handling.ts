@@ -72,7 +72,8 @@ export class HmOog {
 
         await this.updateShell();
         this.consumeLines(); // Discard old output
-
+        await this.placeShellFlag();
+        
         this.didInit = true;
     }
 

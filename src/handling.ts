@@ -46,7 +46,7 @@ export class HmOog {
         await this.#flush();
     }
 
-    async run(command: string, timeout: number = 0, idempotent: boolean = true): Promise<ExecutionResult | null> {
+    async run(command: string, timeout: number = 0, retry: boolean = true): Promise<ExecutionResult | null> {
         let data: string[] | null = null;
         let didReallyTimeout = false;
 
@@ -55,6 +55,7 @@ export class HmOog {
         }
 
         while (data === null) {
+            native.sendEscape();
             if (!await sendCommand(command)) {
                 throw new Error('Failed to send command via hmoog-native.');
             }
@@ -72,18 +73,11 @@ export class HmOog {
                 return null;
             }
 
-            if (!idempotent) {
-                console.warn('Couldn\'t get a result for some reason! Since the command is not idempotent,' +
-                    ' the command isn\'t tried again. Trying to recover the state.')
-                await waitMs(5000);
+            if (!retry) {
+                console.warn('Couldn\'t get a result for some reason!');
                 native.sendEscape();
-
                 return null;
             }
-
-            // We can try again, but we still need to try to get back to a defined state.
-            await waitMs(1000);
-            native.sendEscape();
         }
 
         return this.#postProcess(command, data);

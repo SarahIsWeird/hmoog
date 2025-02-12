@@ -22,7 +22,7 @@ export const getShellPath = (): string => {
  * Sleep for a specified time.
  * @param ms The number of milliseconds to sleep for.
  */
-export const waitMs = (ms: number) =>
+export const waitMs = (ms: number): Promise<void> =>
     new Promise(resolve => setTimeout(resolve, ms));
 
 /**

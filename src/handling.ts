@@ -1,173 +1,200 @@
+import { getShellPath, removeColors, waitMs } from './utils.js';
 import * as native from '@sarahisweird/hmoog-native';
 import FileWatcher from './fileWatcher.js';
-import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { getShellPath, popAssert, removeColors, waitMs } from './utils.js';
-import { OogExecutionError, OogInitializationError, OogNotInitializedError } from './errors.js';
-import { ExecutionResult, FlushReason } from './types.js';
 import {
     ACTIVATING_HARDLINE_MESSAGE,
     FAILURE_MESSAGE,
     FLUSH_MESSAGE,
     GREATER_THAN_ENCODED,
     HARDLINE_ACTIVE_MESSAGE,
+    HARDLINE_ALREADY_ACTIVE_MESSAGE,
     HARDLINE_DISCONNECTED_MESSAGE,
     HARDLINE_RECALIBRATING_MESSAGE,
-    LESS_THAN_ENCODED, NO_HARDLINES_AVAILABLE_MESSAGE,
+    LESS_THAN_ENCODED,
+    NO_HARDLINES_AVAILABLE_MESSAGE,
     SUCCESS_MESSAGE
 } from './constants.js';
+import { ExecutionResult } from './types.js';
 
-/** Options for the {@link HmOog.constructor HmOog constructor}. */
-export interface OogOptions {
-    /**
-     * The path to the shell.txt
-     * @default (the Hackmud data folder of your system)/shell.txt
-     */
-    shellPath: string,
-    /**
-     * If the Hackmud shell should be focused on startup.
-     * @default false
-     */
-    shouldFocusShell: boolean,
+const sendCommand = async (command: string): Promise<boolean> => {
+    if (!native.sendKeystrokes(command + '\n')) return false;
+    await waitMs(50);
+    return true;
 }
 
-/** The class that manages OOG activity. */
 export class HmOog {
-    private readonly shellPath: string;
-    private readonly shouldFocusShell: boolean;
-    private readonly fileWatcher: FileWatcher;
+    readonly #shellPath: string;
+    readonly #fileWatcher: FileWatcher;
 
-    private didInit: boolean = false;
-    private lastShellFlag: string | undefined;
-    private unprocessedLines: string[] = [];
+    #lastCommand?: string;
+    #isInHardline: boolean = false;
 
-    private isInHardline: boolean = false;
+    constructor(path?: string) {
+        this.#shellPath = path ?? getShellPath();
+        this.#fileWatcher = new FileWatcher(this.#shellPath);
+    }
 
-    /**
-     * @param options Initialisation options - see {@link OogOptions}
-     */
-    constructor(options?: Partial<OogOptions>) {
-        const defaultedOptions: OogOptions = {
-            shellPath: getShellPath(),
-            shouldFocusShell: true,
-            ...(options || {}),
-        };
-
+    async init() {
         if (!native.init()) {
-            throw new OogInitializationError('Could not initialize native module!');
+            throw new Error('Failed to initialize hmoog-native!');
         }
 
-        this.shellPath = defaultedOptions.shellPath;
-        this.shouldFocusShell = defaultedOptions.shouldFocusShell;
-        this.fileWatcher = new FileWatcher(defaultedOptions.shellPath);
+        native.sendMouseClick(100, 100, false);
+        native.sendEscape();
+
+        await this.#flush();
+    }
+
+    async run(command: string, timeout: number = 0, idempotent: boolean = true): Promise<ExecutionResult | null> {
+        let data: string[] | null = null;
+        let didReallyTimeout = false;
+
+        if (timeout) {
+            waitMs(timeout).then(() => didReallyTimeout = true);
+        }
+
+        while (data === null) {
+            if (!await sendCommand(command)) {
+                throw new Error('Failed to send command via hmoog-native.');
+            }
+
+            await waitMs(500);
+
+            this.#lastCommand = command;
+            data = await this.#flush(timeout);
+            this.#lastCommand = undefined;
+
+            if (data) break;
+
+            if (didReallyTimeout) {
+                console.warn(`Execution of command timed out after ${timeout}ms.`);
+                return null;
+            }
+
+            if (!idempotent) {
+                console.warn('Couldn\'t get a result for some reason! Since the command is not idempotent,' +
+                    ' the command isn\'t tried again. Trying to recover the state.')
+                await waitMs(5000);
+                native.sendEscape();
+
+                return null;
+            }
+
+            // We can try again, but we still need to try to get back to a defined state.
+            await waitMs(1000);
+            native.sendEscape();
+        }
+
+        return this.#postProcess(command, data);
+    }
+
+    async enterHardline(): Promise<number> {
+        await sendCommand('kernel.hardline');
+        await waitMs(50);
+
+        const lines = await this.#flush(3000);
+        if (lines) {
+            const result = this.#postProcess('kernel.hardline', lines);
+            const cooldown = this.#getHardlineCooldown(result);
+            console.log(cooldown);
+            if (cooldown < 0) return 0;
+            if (cooldown > 0) return cooldown;
+        }
+
+        await waitMs(10000);
+
+        for (let i = 0; i < 12; i++) {
+            await sendCommand('0123456789');
+        }
+
+        await waitMs(15000);
+
+        // Ensure that if we didn't manage to send the flush beforehand, it doesn't
+        // sit in the shell still.
+        native.sendKeystrokes('\n');
+
+        this.#isInHardline = true;
+
+        return 0;
     }
 
     /**
-     * Initialize the OOG. Must be called before any other methods!
+     * Alias for {@link exitHardline}.
      */
-    async init(): Promise<void> {
-        if (this.shouldFocusShell) {
-            native.sendMouseClick(100, 100, false);
-        }
-
-        await this.updateShell();
-        this.consumeLines(); // Discard old output
-
-        this.didInit = true;
+    async enterRecon(): Promise<boolean> {
+        return this.exitHardline();
     }
 
-    /**
-     * Wait until the shell is flushed.
-     *
-     * @returns why the shell was flushed
-     */
-    async waitForFlush(): Promise<FlushReason> {
-        this.assertDidInit();
-        await this.fileWatcher.waitForChange();
-        return await this.updateShell();
-    };
+    async exitHardline(): Promise<boolean> {
+        const exitCommand = 'kernel.hardline { dc: true }';
+        await sendCommand(exitCommand);
+        await waitMs(5000);
 
-    /**
-     * Wait until the shell is flushed by a `flush` command.
-     */
-    async waitForCommandFlush(): Promise<void> {
-        while (await this.waitForFlush() !== FlushReason.COMMAND) {}
-    }
+        const data = await this.#flush();
+        const result = this.#postProcess(exitCommand, data!);
 
-    /**
-     * Runs the `flush` command and waits until it successfully flushed the shell.
-     *
-     * @param timeout=0 the maximum number of milliseconds to try flushing.
-     *                  A value below 1 means no waiting.
-     *
-     * @returns whether or not a timeout happened.
-     *
-     * @remarks
-     * The flush operation may be delayed by another program that's currently being executed,
-     * in which case this function only returns when both the program and the flush command ran.
-     */
-    async flush(timeout: number = 0): Promise<boolean> {
-        this.assertDidInit();
-
-        let didCommandFlush: boolean = false;
-        let didTimeout: boolean = false;
-
-        this.waitForCommandFlush().then(() => { didCommandFlush = true });
-        if (timeout > 0) {
-            setTimeout(() => didTimeout = true, timeout);
+        const success = result.output.colored.raw.includes(HARDLINE_DISCONNECTED_MESSAGE);
+        if (success) {
+            this.#isInHardline = false;
         }
 
-        await this.sendRaw('flush');
-        while (!didCommandFlush && !didTimeout) {
-            native.sendKeystrokes('\n');
-            await waitMs(50);
-        }
-
-        // For some reason, the delay sometimes isn't big enough. This should fix it.
-        await waitMs(500);
-        return !didCommandFlush && didTimeout;
+        return success;
     }
 
-    /**
-     * Sends a command to Hackmud and processes the result.
-     *
-     * @param command The command to send
-     * @returns The result of the command
-     * @throws TypeError if the command contains newlines
-     * @throws OogExecutionError if the command couldn't be typed into Hackmud
-     */
-    async runCommand(command: string): Promise<ExecutionResult> {
-        if (!await this.sendRaw(command)) throw new OogExecutionError('Could not send command to Hackmud!');
-        await this.flush();
-
-        return this.processOutput(command);
+    isInHardline() {
+        return this.#isInHardline;
     }
 
-    private processOutput(ofCommand: string): ExecutionResult {
-        const lines: string[] = this.consumeLines();
+    #getHardlineCooldown(result: ExecutionResult): number {
+        const lines = result.output.colored.lines;
+        if (lines.includes(ACTIVATING_HARDLINE_MESSAGE)) return 0;
 
-        let echoedCommand: string | undefined = undefined;
-        while (echoedCommand !== ofCommand) {
-            echoedCommand = lines.length > 0
-                ? removeColors(lines.shift()!).slice(2)
-                : undefined;
+        let cooldownMessage: string;
 
-            if (echoedCommand === undefined) throw new OogExecutionError('Could not find the command that was sent!');
+        const notAvailableIndex = lines.findLastIndex(line => line.includes(NO_HARDLINES_AVAILABLE_MESSAGE));
+        const recalibratingIndex = lines.findLastIndex(line => line.includes(HARDLINE_RECALIBRATING_MESSAGE));
+        const alreadyActiveIndex = lines.findLastIndex(line => line.includes(HARDLINE_ALREADY_ACTIVE_MESSAGE));
+
+        if (alreadyActiveIndex !== -1) {
+            return -1;
+        } else if (notAvailableIndex !== -1) {
+            cooldownMessage = lines[notAvailableIndex]
+                .substring(NO_HARDLINES_AVAILABLE_MESSAGE.length);
+        } else if (recalibratingIndex !== -1) {
+            cooldownMessage = lines[recalibratingIndex]
+                .substring(HARDLINE_RECALIBRATING_MESSAGE.length);
+        } else {
+            // Tentatively going to assume that this is means it succeeded, but we didn't flush
+            return 0;
         }
 
+        const secondsString = cooldownMessage.substring(1).split(' ')[0].replace('s', '');
+        return (parseInt(secondsString) + 1) * 1000;
+    }
+
+    #postProcess(command: string, lines: string[]): ExecutionResult {
         let success: boolean | undefined;
-        if ([SUCCESS_MESSAGE, FAILURE_MESSAGE].includes(lines[0])) {
-            success = lines.shift() == SUCCESS_MESSAGE;
+        if (lines.indexOf(SUCCESS_MESSAGE) !== -1) {
+            success = true;
+        } else if (lines.indexOf(FAILURE_MESSAGE) !== -1) {
+            success = false;
+        }
+
+        const lastCommandIndex = lines.findLastIndex(line =>
+            removeColors(line) === `>>${command}`);
+        if (lastCommandIndex !== -1) {
+            lines = lines.slice(lastCommandIndex);
         }
 
         const rawText = lines.join('\n');
-        const rawUncoloredText = removeColors(rawText)
+        const uncoloredText = removeColors(rawText)
             .replaceAll(LESS_THAN_ENCODED, '<')
             .replaceAll(GREATER_THAN_ENCODED, '>');
-        const uncoloredLines = rawUncoloredText.split('\n');
+        const uncoloredLines = uncoloredText.split('\n');
 
         return {
-            command: ofCommand,
+            command: command,
             success: success,
             output: {
                 colored: {
@@ -175,227 +202,58 @@ export class HmOog {
                     lines: lines,
                 },
                 uncolored: {
-                    raw: rawUncoloredText,
+                    raw: uncoloredText,
                     lines: uncoloredLines,
                 },
             },
         };
     }
 
-    /**
-     * Sends a command to Hackmud.
-     *
-     * @param command The command to send
-     * @returns whether the command could be typed into Hackmud
-     * @throws TypeError if the command contains newlines
-     */
-    async sendRaw(command: string): Promise<boolean> {
-        if (command.trim() === '') throw new TypeError('Command cannot be empty!');
-        if (command.includes('\n')) throw new TypeError('Commands cannot contain newlines!');
+    async #flush(timeout: number = 0): Promise<string[] | null> {
+        let didTimeout: boolean = false;
+        let didFlush: boolean = false;
 
-        if (!native.sendKeystrokes(command + '\n')) return false;
-        await waitMs(50);
-        return true;
-    }
+        this.#fileWatcher.waitForChange().then(() => didFlush = true);
 
-    /**
-     * Removes and returns all shell lines yet to be processed by other methods.
-     *
-     * @returns a list of the raw shell output
-     */
-    consumeLines(): string[] {
-        const lines: string[] = this.unprocessedLines;
-        this.unprocessedLines = [];
-        return lines;
-    }
+        if (timeout <= 0) timeout = 10000;
+        waitMs(timeout).then(() => didTimeout = true);
 
-    /**
-     * Get the current hardline activation status.
-     */
-    isHardlineActive(): boolean {
-        return this.isInHardline;
-    }
+        await sendCommand('flush');
 
-    /**
-     * Enters hardline.
-     *
-     * @remarks
-     *
-     * Due to the hardline GUI, it takes *at least* 15 seconds to enter hardline!
-     * If entering hardline fails, the call takes ~2s.
-     * If it succeeds, it will take over 20s!
-     *
-     * This delay can **not** be reduced meaningfully due to the
-     * `-hardline active-` message, as well as all the animations being pretty slow.
-     *
-     * @returns 0 if successful, otherwise how many milliseconds are left until the next hardline.
-     */
-    async enterHardline(): Promise<number> {
-        this.consumeLines();
-
-        await this.sendRaw('kernel.hardline');
-
-        // If we can flush, we can't be in the hardline!
-        const didTimeout = await this.flush(3000);
-        if (!didTimeout) {
-            // Apparently, a flush happens before entering hardline.
-            // Unsure if it's only sometimes or always,
-            // but we can just check the response if we got one.
-            const cooldown = this.getHardlineCooldown();
-            if (cooldown > 0) return cooldown;
+        while (!didTimeout && !didFlush) {
+            native.sendKeystrokes('\n');
+            await waitMs(50);
         }
 
-        await waitMs(8000);
+        if (didTimeout) return null;
 
-        for (let _i = 0; _i < 12; _i++) {
-            native.sendKeystrokes('0123456789');
-            await waitMs(10);
+        return await this.#readShell();
+    }
+
+    async #readShell(): Promise<string[] | null> {
+        const contents = await readFile(this.#shellPath, { encoding: 'utf-8' });
+        const lines = contents.split('\n');
+
+        const lastHardlineDisconnectedIndex = lines.lastIndexOf(HARDLINE_DISCONNECTED_MESSAGE);
+        const lastHardlineActiveIndex = lines.lastIndexOf(HARDLINE_ACTIVE_MESSAGE);
+
+        if (lastHardlineDisconnectedIndex > lastHardlineActiveIndex) {
+            this.#isInHardline = false;
         }
 
-        await waitMs(11000);
+        if (!this.#lastCommand) return lines;
 
-        await this.flush();
-        this.consumeLines();
-        return 0;
-    }
+        const enteredCommand = this.#lastCommand
+            .replaceAll('<', LESS_THAN_ENCODED)
+            .replaceAll('>', GREATER_THAN_ENCODED);
 
-    /**
-     * Exits hardline.
-     *
-     * @remarks
-     *
-     * Wait five seconds after calling `kernel.hardline {dc: true}`, due to the
-     * `-hardline disconnected-` message breaking parsing.
-     *
-     * While it could be reduced, it would also show up unexpectedly in results
-     * from {@link runCommand}!
-     */
-    async exitHardline(): Promise<void> {
-        await this.sendRaw('kernel.hardline {dc: true}');
-        await waitMs(5000);
-        await this.flush();
-        this.consumeLines();
-    }
+        const lastCommandIndex = lines.findLastIndex(line =>
+            removeColors(line) === `>>${enteredCommand}`);
+        if (lastCommandIndex === -1) return null;
 
-    /**
-     * Helper method to get the number of milliseconds left until the next hardline is available.
-     *
-     * @private
-     */
-    private getHardlineCooldown(): number {
-        const result = this.processOutput('kernel.hardline');
+        const lastFlushIndex = lines.lastIndexOf(FLUSH_MESSAGE);
+        if (lastFlushIndex < lastCommandIndex) return null;
 
-        const response = result.output.colored.lines[0];
-        if (response && response === ACTIVATING_HARDLINE_MESSAGE) return 0;
-
-        let secondsString: string;
-        if (response && response.startsWith(NO_HARDLINES_AVAILABLE_MESSAGE)) {
-            secondsString = response.substring(NO_HARDLINES_AVAILABLE_MESSAGE.length + 1);
-        } else if (response && response.startsWith(HARDLINE_RECALIBRATING_MESSAGE)) {
-            secondsString = response.substring(HARDLINE_RECALIBRATING_MESSAGE.length + 1);
-        } else {
-            const errorMessage = 'Could not enter hardline, and yet there is no recalibration message!\n'
-                + 'Response from kernel.hardline:\n'
-                + response;
-            throw new OogExecutionError(errorMessage);
-        }
-
-        secondsString = secondsString
-            .split(' ')[0]
-            .replace('s', '');
-
-        // Add one second, just to be sure. "0s" remaining is a thing.
-        return (parseInt(secondsString) + 1) * 1000;
-    }
-
-    /**
-     * Small helper method to check if {@link init} has been run.
-     *
-     * @private
-     * @throws OogNotInitializedError if not initialized
-     */
-    private assertDidInit(): void {
-        if (!this.didInit) throw new OogNotInitializedError();
-    }
-
-    /**
-     * Sends a special flag, so we can find where we last left off.
-     *
-     * @remarks
-     *
-     * The reason we need to do this is that we can't tell apart old stuff from new stuff
-     * in every case. If the outputs have been exactly the same, we'd need to guesswork.
-     * This completely negates the need for guessing!
-     *
-     * @private
-     */
-    private async placeShellFlag(): Promise<void> {
-        this.lastShellFlag = randomUUID().toString();
-        await waitMs(500);
-        await this.sendRaw(`# ${this.lastShellFlag}`);
-    }
-
-    /**
-     * Helper method that searches for the previous {@link placeShellFlag shell flag} and removes everything
-     * before it, including the flag itself and its error output.
-     *
-     * @private
-     * @param lines The lines to process
-     */
-    private removeOldLines(lines: string[]): string[] {
-        if (!this.lastShellFlag) return lines;
-
-        const lastLineIndex = lines.findIndex(line => line.includes(this.lastShellFlag!));
-        if (this.didInit && lastLineIndex === -1) throw new Error('Couldn\'t merge shell histories!');
-
-        return lines.slice(lastLineIndex + 3);
-    }
-
-    /**
-     * Reads the actual shell.txt file and puts yet unprocessed lines into {@link unprocessedLines}.
-     *
-     * Removes *some* junk output like any `flush` executions.
-     *
-     * @private
-     * @returns The reason for the last shell flush
-     */
-    private async updateShell(): Promise<FlushReason> {
-        const newContents: string = await readFile(this.shellPath, { encoding: 'utf8' });
-        const lines: string[] = newContents.split('\n');
-
-        let newLines: string[] = this.removeOldLines(lines);
-        if (newLines.length === 0) return FlushReason.AUTO;
-
-        const flushReason: FlushReason = newLines[newLines.length - 1] === FLUSH_MESSAGE
-            ? FlushReason.COMMAND
-            : FlushReason.AUTO;
-
-        if (newLines.indexOf(HARDLINE_ACTIVE_MESSAGE) !== -1) {
-            this.isInHardline = true;
-        }
-
-        if (newLines.indexOf(HARDLINE_DISCONNECTED_MESSAGE) !== -1) {
-            this.isInHardline = false;
-        }
-
-        if (flushReason === FlushReason.AUTO) return FlushReason.AUTO;
-
-        // :(
-        newLines = newLines.filter(line =>
-            (line !== HARDLINE_ACTIVE_MESSAGE) && (line !== HARDLINE_DISCONNECTED_MESSAGE));
-
-        if (flushReason === FlushReason.COMMAND) {
-            popAssert(newLines, FLUSH_MESSAGE);
-
-            // If the last command also was a flush, this will be empty.
-            if (newLines.length > 0) {
-                popAssert(newLines, '');
-            }
-        }
-
-        this.unprocessedLines.push(...newLines);
-        await this.placeShellFlag();
-
-        return flushReason;
+        return lines.slice(lastCommandIndex + 1, lastFlushIndex);
     }
 }

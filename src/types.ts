@@ -1,7 +1,5 @@
-/** An execution result from {@link HmOog.runCommand} */
+/** An execution result from {@link HmOog.run} */
 export type ExecutionResult = {
-    /** The command that was run (returned as-is) */
-    command: string,
     /**
      * Whether the script ran successfully.
      *
@@ -10,22 +8,32 @@ export type ExecutionResult = {
      * undefined if neither is present.
      */
     success?: boolean,
-    /** The output from the script. */
-    output: {
-        /** The colored output from the script. */
-        colored: {
-            /** The raw output from the script. */
-            raw: string,
-            /** The output from the script, split into lines. */
-            lines: string[],
-        },
-        /** The output from the script with color tags removed. */
-        uncolored: {
-            /** The raw output from the script, but with color tags removed. */
-            raw: string,
-            /** The output from the script with color tags removed, split into lines. */
-            lines: string[],
-        },
+    /** The colored output from the script. */
+    colored: {
+        /** The command that was run */
+        command: string,
+        /** The raw output from the script. */
+        raw: string,
+        /** The output from the script, split into lines. */
+        lines: string[],
+    },
+    /** The output from the script with color tags removed. */
+    uncolored: {
+        /** The command that was run (returned as-is) */
+        command: string,
+        /** The raw output from the script, but with color tags removed. */
+        raw: string,
+        /** The output from the script with color tags removed, split into lines. */
+        lines: string[],
+    },
+    /** The colored output from the script, with color tags replaced with ANSI color codes. */
+    ansi: {
+        /** The ANSI-colored command */
+        command: string,
+        /** The raw output from the script, with ANSI coloring. */
+        raw: string,
+        /** The raw output from the script, split into lines and with ANSI coloring. */
+        lines: string[],
     },
 };
 

@@ -1,6 +1,6 @@
 {
     "name": "@sarahisweird/hmoog",
-    "version": "0.1.1",
+    "version": "0.2.0",
     "description": "Out-of-game automation for Hackmud",
     "main": "dist/index.js",
     "keywords": [

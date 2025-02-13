@@ -16,6 +16,7 @@ import {
     SUCCESS_MESSAGE
 } from './constants.js';
 import { ExecutionResult } from './types.js';
+import { AnsiConverter, AnsiConverterOptions } from './terminal/ansi_converter.js';
 
 const sendCommand = async (command: string): Promise<boolean> => {
     if (!native.sendKeystrokes(command + '\n')) return false;
@@ -23,16 +24,30 @@ const sendCommand = async (command: string): Promise<boolean> => {
     return true;
 }
 
+export type HmOogOptions = {
+    shellPath: string,
+    ansiOptions: Partial<AnsiConverterOptions>,
+};
+
 export class HmOog {
-    readonly #shellPath: string;
-    readonly #fileWatcher: FileWatcher;
+    private readonly shellPath: string;
+    private readonly fileWatcher: FileWatcher;
+    private readonly ansiOptions: Partial<AnsiConverterOptions>;
 
-    #lastCommand?: string;
-    #isInHardline: boolean = false;
+    private lastCommand?: string;
+    private isHardlineActive: boolean = false;
 
-    constructor(path?: string) {
-        this.#shellPath = path ?? getShellPath();
-        this.#fileWatcher = new FileWatcher(this.#shellPath);
+    constructor(options?: Partial<HmOogOptions>) {
+        const defaultedOptions: HmOogOptions = {
+            shellPath: getShellPath(),
+            ansiOptions: {},
+            ...options,
+        };
+
+        this.shellPath = defaultedOptions.shellPath;
+        this.ansiOptions = defaultedOptions.ansiOptions;
+
+        this.fileWatcher = new FileWatcher(this.shellPath);
     }
 
     async init() {
@@ -56,15 +71,17 @@ export class HmOog {
 
         while (data === null) {
             native.sendEscape();
+            await waitMs(500);
+
             if (!await sendCommand(command)) {
                 throw new Error('Failed to send command via hmoog-native.');
             }
 
             await waitMs(500);
 
-            this.#lastCommand = command;
+            this.lastCommand = command;
             data = await this.#flush(timeout);
-            this.#lastCommand = undefined;
+            this.lastCommand = undefined;
 
             if (data) break;
 
@@ -108,7 +125,7 @@ export class HmOog {
         // sit in the shell still.
         native.sendKeystrokes('\n');
 
-        this.#isInHardline = true;
+        this.isHardlineActive = true;
 
         return 0;
     }
@@ -128,20 +145,20 @@ export class HmOog {
         const data = await this.#flush();
         const result = this.#postProcess(exitCommand, data!);
 
-        const success = result.output.colored.raw.includes(HARDLINE_DISCONNECTED_MESSAGE);
+        const success = result.colored.raw.includes(HARDLINE_DISCONNECTED_MESSAGE);
         if (success) {
-            this.#isInHardline = false;
+            this.isHardlineActive = false;
         }
 
         return success;
     }
 
     isInHardline() {
-        return this.#isInHardline;
+        return this.isHardlineActive;
     }
 
     #getHardlineCooldown(result: ExecutionResult): number {
-        const lines = result.output.colored.lines;
+        const lines = result.colored.lines;
         if (lines.includes(ACTIVATING_HARDLINE_MESSAGE)) return 0;
 
         let cooldownMessage: string;
@@ -177,8 +194,11 @@ export class HmOog {
 
         const lastCommandIndex = lines.findLastIndex(line =>
             removeColors(line) === `>>${command}`);
+
+        let commandLine = '';
         if (lastCommandIndex !== -1) {
-            lines = lines.slice(lastCommandIndex);
+            commandLine = lines[lastCommandIndex];
+            lines = lines.slice(lastCommandIndex + 1);
         }
 
         const rawText = lines.join('\n');
@@ -187,18 +207,26 @@ export class HmOog {
             .replaceAll(GREATER_THAN_ENCODED, '>');
         const uncoloredLines = uncoloredText.split('\n');
 
+        const ansiCommand = AnsiConverter.convertFromShellText(commandLine, this.ansiOptions);
+        const ansiText = AnsiConverter.convertFromShellText(rawText, this.ansiOptions);
+        const ansiLines = ansiText.split('\n');
+
         return {
-            command: command,
             success: success,
-            output: {
-                colored: {
-                    raw: rawText,
-                    lines: lines,
-                },
-                uncolored: {
-                    raw: uncoloredText,
-                    lines: uncoloredLines,
-                },
+            colored: {
+                command: commandLine,
+                raw: rawText,
+                lines: lines,
+            },
+            uncolored: {
+                command: `>>${command}`,
+                raw: uncoloredText,
+                lines: uncoloredLines,
+            },
+            ansi: {
+                command: ansiCommand,
+                raw: ansiText,
+                lines: ansiLines,
             },
         };
     }
@@ -207,7 +235,7 @@ export class HmOog {
         let didTimeout: boolean = false;
         let didFlush: boolean = false;
 
-        this.#fileWatcher.waitForChange().then(() => didFlush = true);
+        this.fileWatcher.waitForChange().then(() => didFlush = true);
 
         if (timeout <= 0) timeout = 10000;
         waitMs(timeout).then(() => didTimeout = true);
@@ -225,19 +253,19 @@ export class HmOog {
     }
 
     async #readShell(): Promise<string[] | null> {
-        const contents = await readFile(this.#shellPath, { encoding: 'utf-8' });
+        const contents = await readFile(this.shellPath, { encoding: 'utf-8' });
         const lines = contents.split('\n');
 
         const lastHardlineDisconnectedIndex = lines.lastIndexOf(HARDLINE_DISCONNECTED_MESSAGE);
         const lastHardlineActiveIndex = lines.lastIndexOf(HARDLINE_ACTIVE_MESSAGE);
 
         if (lastHardlineDisconnectedIndex > lastHardlineActiveIndex) {
-            this.#isInHardline = false;
+            this.isHardlineActive = false;
         }
 
-        if (!this.#lastCommand) return lines;
+        if (!this.lastCommand) return lines;
 
-        const enteredCommand = this.#lastCommand
+        const enteredCommand = this.lastCommand
             .replaceAll('<', LESS_THAN_ENCODED)
             .replaceAll('>', GREATER_THAN_ENCODED);
 
@@ -248,6 +276,6 @@ export class HmOog {
         const lastFlushIndex = lines.lastIndexOf(FLUSH_MESSAGE);
         if (lastFlushIndex < lastCommandIndex) return null;
 
-        return lines.slice(lastCommandIndex + 1, lastFlushIndex);
+        return lines.slice(lastCommandIndex, lastFlushIndex);
     }
 }
